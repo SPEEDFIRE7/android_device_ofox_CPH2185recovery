@@ -1,12 +1,12 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
-#include <linux/ioctl.h>
 #include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -72,7 +72,12 @@ static int run_daemon(void)
     }
 
     int server = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (server < 0) { perror("socket"); ioctl_arg(dev, FLASHLIGHTIOC_X_SET_DRIVER, 0); close(dev); return 1; }
+    if (server < 0) {
+        perror("socket");
+        ioctl_arg(dev, FLASHLIGHTIOC_X_SET_DRIVER, 0);
+        close(dev);
+        return 1;
+    }
 
     unlink(SOCKET_PATH);
     struct sockaddr_un addr;
@@ -102,39 +107,37 @@ static int run_daemon(void)
 
         char cmd[32] = {0};
         ssize_t n = read(client, cmd, sizeof(cmd) - 1);
-        int rc = 0;
         const char *reply = "OK\n";
 
         if (n <= 0) {
-            rc = -1;
+            reply = "ERR: empty command\n";
         } else if (strncmp(cmd, "on", 2) == 0) {
             if (ioctl_arg(dev, FLASH_IOC_SET_DUTY, 1) < 0 ||
                 ioctl_arg(dev, FLASH_IOC_SET_ONOFF, 1) < 0) {
                 perror("flashlight ON ioctl");
                 reply = "ERR: ON ioctl failed\n";
-                rc = -1;
             }
         } else if (strncmp(cmd, "off", 3) == 0) {
             if (ioctl_arg(dev, FLASH_IOC_SET_ONOFF, 0) < 0) {
                 perror("flashlight OFF ioctl");
                 reply = "ERR: OFF ioctl failed\n";
-                rc = -1;
             }
         } else if (strncmp(cmd, "stop", 4) == 0) {
             if (ioctl_arg(dev, FLASH_IOC_SET_ONOFF, 0) < 0)
                 perror("flashlight OFF during stop");
-            ioctl_arg(dev, FLASHLIGHTIOC_X_SET_DRIVER, 0);
+            if (ioctl_arg(dev, FLASHLIGHTIOC_X_SET_DRIVER, 0) < 0)
+                perror("flashlight driver release");
             running = 0;
         } else {
             reply = "ERR: use on, off, or stop\n";
-            rc = -1;
         }
 
-        (void)rc;
         (void)write(client, reply, strlen(reply));
         close(client);
     }
 
+    ioctl_arg(dev, FLASH_IOC_SET_ONOFF, 0);
+    ioctl_arg(dev, FLASHLIGHTIOC_X_SET_DRIVER, 0);
     close(server);
     unlink(SOCKET_PATH);
     close(dev);
