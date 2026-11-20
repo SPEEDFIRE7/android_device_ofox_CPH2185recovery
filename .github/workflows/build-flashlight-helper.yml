@@ -2,6 +2,12 @@ name: Build CPH2185 Flashlight Helper
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - fox_12.1
+    paths:
+      - "tools/flashlightd.c"
+      - ".github/workflows/build-flashlight-helper.yml"
 
 permissions:
   contents: read
