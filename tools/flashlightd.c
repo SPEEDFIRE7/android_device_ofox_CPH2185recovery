@@ -1,10 +1,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
-#include <signal.h>
-#include <stddef.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -16,18 +13,24 @@
 #define SOCKET_PATH "/tmp/flashlightd.sock"
 #define FLASHLIGHT_MAGIC 'S'
 #define FLASHLIGHTIOC_X_SET_DRIVER _IOWR(FLASHLIGHT_MAGIC, 30, int)
-#define FLASH_IOC_SET_DUTY         _IOR(FLASHLIGHT_MAGIC, 110, int)
-#define FLASH_IOC_SET_ONOFF        _IOR(FLASHLIGHT_MAGIC, 115, int)
+#define FLASH_IOC_SET_TIME_OUT_TIME_MS _IOR(FLASHLIGHT_MAGIC, 100, int)
+#define FLASH_IOC_SET_DUTY _IOR(FLASHLIGHT_MAGIC, 110, int)
+#define FLASH_IOC_SET_ONOFF _IOR(FLASHLIGHT_MAGIC, 115, int)
 
+/* The core ioctl ABI copies this 3-int structure for every request. */
 struct flashlight_user_arg {
     int type_id;
     int ct_id;
     int arg;
 };
 
-static int ioctl_arg(int fd, unsigned long request, int value)
+static int flashlight_ioctl(int fd, unsigned long request, int value)
 {
-    struct flashlight_user_arg a = { .type_id = 1, .ct_id = 1, .arg = value };
+    struct flashlight_user_arg a = {
+        .type_id = 0, /* CPH2185 flashlight type index */
+        .ct_id = 0,   /* CPH2185 main camera index */
+        .arg = value
+    };
     return ioctl(fd, request, &a);
 }
 
@@ -65,7 +68,8 @@ static int run_daemon(void)
     int dev = open(DEVICE_PATH, O_RDWR | O_CLOEXEC);
     if (dev < 0) { perror("open /dev/flashlight"); return 1; }
 
-    if (ioctl_arg(dev, FLASHLIGHTIOC_X_SET_DRIVER, 1) < 0) {
+    /* X_SET_DRIVER uses flashlight_user_arg; value 1 acquires the driver. */
+    if (flashlight_ioctl(dev, FLASHLIGHTIOC_X_SET_DRIVER, 1) < 0) {
         perror("FLASHLIGHTIOC_X_SET_DRIVER");
         close(dev);
         return 1;
@@ -74,7 +78,6 @@ static int run_daemon(void)
     int server = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (server < 0) {
         perror("socket");
-        ioctl_arg(dev, FLASHLIGHTIOC_X_SET_DRIVER, 0);
         close(dev);
         return 1;
     }
@@ -90,8 +93,7 @@ static int run_daemon(void)
         perror("bind/chmod/listen");
         close(server);
         unlink(SOCKET_PATH);
-        ioctl_arg(dev, FLASHLIGHTIOC_X_SET_DRIVER, 0);
-        close(dev);
+        close(dev); /* core release balances the driver acquisition */
         return 1;
     }
 
@@ -112,21 +114,25 @@ static int run_daemon(void)
         if (n <= 0) {
             reply = "ERR: empty command\n";
         } else if (strncmp(cmd, "on", 2) == 0) {
-            if (ioctl_arg(dev, FLASH_IOC_SET_DUTY, 1) < 0 ||
-                ioctl_arg(dev, FLASH_IOC_SET_ONOFF, 1) < 0) {
+            /*
+             * yogurt_probe sets timeout to 100 ms. Set it to zero before
+             * enabling, otherwise the driver's hrtimer turns the LED off.
+             * Duty 1 is the highest torch duty exposed by this device.
+             */
+            if (flashlight_ioctl(dev, FLASH_IOC_SET_TIME_OUT_TIME_MS, 0) < 0 ||
+                flashlight_ioctl(dev, FLASH_IOC_SET_DUTY, 1) < 0 ||
+                flashlight_ioctl(dev, FLASH_IOC_SET_ONOFF, 1) < 0) {
                 perror("flashlight ON ioctl");
                 reply = "ERR: ON ioctl failed\n";
             }
         } else if (strncmp(cmd, "off", 3) == 0) {
-            if (ioctl_arg(dev, FLASH_IOC_SET_ONOFF, 0) < 0) {
+            if (flashlight_ioctl(dev, FLASH_IOC_SET_ONOFF, 0) < 0) {
                 perror("flashlight OFF ioctl");
                 reply = "ERR: OFF ioctl failed\n";
             }
         } else if (strncmp(cmd, "stop", 4) == 0) {
-            if (ioctl_arg(dev, FLASH_IOC_SET_ONOFF, 0) < 0)
+            if (flashlight_ioctl(dev, FLASH_IOC_SET_ONOFF, 0) < 0)
                 perror("flashlight OFF during stop");
-            if (ioctl_arg(dev, FLASHLIGHTIOC_X_SET_DRIVER, 0) < 0)
-                perror("flashlight driver release");
             running = 0;
         } else {
             reply = "ERR: use on, off, or stop\n";
@@ -136,11 +142,10 @@ static int run_daemon(void)
         close(client);
     }
 
-    ioctl_arg(dev, FLASH_IOC_SET_ONOFF, 0);
-    ioctl_arg(dev, FLASHLIGHTIOC_X_SET_DRIVER, 0);
+    (void)flashlight_ioctl(dev, FLASH_IOC_SET_ONOFF, 0);
     close(server);
     unlink(SOCKET_PATH);
-    close(dev);
+    close(dev); /* release() decrements use_count; do NOT X_SET_DRIVER(0) */
     return 0;
 }
 
