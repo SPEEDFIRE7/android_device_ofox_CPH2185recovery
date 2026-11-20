@@ -17,7 +17,7 @@
 #define FLASH_IOC_SET_DUTY _IOR(FLASHLIGHT_MAGIC, 110, int)
 #define FLASH_IOC_SET_ONOFF _IOR(FLASHLIGHT_MAGIC, 115, int)
 
-/* The core ioctl ABI copies this 3-int structure for every request. */
+/* Exact userspace ABI from CPH2185 flashlight.h. */
 struct flashlight_user_arg {
     int type_id;
     int ct_id;
@@ -27,8 +27,12 @@ struct flashlight_user_arg {
 static int flashlight_ioctl(int fd, unsigned long request, int value)
 {
     struct flashlight_user_arg a = {
-        .type_id = 0, /* CPH2185 flashlight type index */
-        .ct_id = 0,   /* CPH2185 main camera index */
+        /*
+         * User IDs are 1-based. The kernel maps (1, 1) to
+         * internal type/CT indexes (0, 0).
+         */
+        .type_id = 1,
+        .ct_id = 1,
         .arg = value
     };
     return ioctl(fd, request, &a);
@@ -68,7 +72,6 @@ static int run_daemon(void)
     int dev = open(DEVICE_PATH, O_RDWR | O_CLOEXEC);
     if (dev < 0) { perror("open /dev/flashlight"); return 1; }
 
-    /* X_SET_DRIVER uses flashlight_user_arg; value 1 acquires the driver. */
     if (flashlight_ioctl(dev, FLASHLIGHTIOC_X_SET_DRIVER, 1) < 0) {
         perror("FLASHLIGHTIOC_X_SET_DRIVER");
         close(dev);
@@ -93,7 +96,7 @@ static int run_daemon(void)
         perror("bind/chmod/listen");
         close(server);
         unlink(SOCKET_PATH);
-        close(dev); /* core release balances the driver acquisition */
+        close(dev);
         return 1;
     }
 
@@ -114,11 +117,6 @@ static int run_daemon(void)
         if (n <= 0) {
             reply = "ERR: empty command\n";
         } else if (strncmp(cmd, "on", 2) == 0) {
-            /*
-             * yogurt_probe sets timeout to 100 ms. Set it to zero before
-             * enabling, otherwise the driver's hrtimer turns the LED off.
-             * Duty 1 is the highest torch duty exposed by this device.
-             */
             if (flashlight_ioctl(dev, FLASH_IOC_SET_TIME_OUT_TIME_MS, 0) < 0 ||
                 flashlight_ioctl(dev, FLASH_IOC_SET_DUTY, 1) < 0 ||
                 flashlight_ioctl(dev, FLASH_IOC_SET_ONOFF, 1) < 0) {
@@ -145,7 +143,7 @@ static int run_daemon(void)
     (void)flashlight_ioctl(dev, FLASH_IOC_SET_ONOFF, 0);
     close(server);
     unlink(SOCKET_PATH);
-    close(dev); /* release() decrements use_count; do NOT X_SET_DRIVER(0) */
+    close(dev);
     return 0;
 }
 
