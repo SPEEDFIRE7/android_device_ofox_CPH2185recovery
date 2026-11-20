@@ -1,0 +1,41 @@
+name: Build CPH2185 Flashlight Helper
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Android SDK and NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK
+        run: sdkmanager --install "ndk;27.2.12479018"
+
+      - name: Build ARM64 helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          NDK="$ANDROID_HOME/ndk/27.2.12479018"
+          CLANG="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang"
+          mkdir -p out
+          "$CLANG" -std=c11 -O2 -Wall -Wextra -Werror \
+            -fPIE -pie -Wl,--build-id=sha1 \
+            tools/flashlightd.c -o out/flashlightd
+          file out/flashlightd
+          readelf -h out/flashlightd | grep -E 'Class:|Machine:'
+
+      - name: Upload helper
+        uses: actions/upload-artifact@v4
+        with:
+          name: CPH2185-flashlight-helper-arm64
+          path: out/flashlightd
+          if-no-files-found: error
+          retention-days: 14
